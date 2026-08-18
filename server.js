@@ -25,7 +25,9 @@ if (!ADMIN_PASS) {
 // ============================================================
 // API KEYS STORE — توليد + إدارة مفاتيح المستخدمين
 // ============================================================
-const KEYS_FILE = path.join('/tmp', 'api_keys.json');
+const DATA_DIR  = process.env.DATA_DIR || '/data';
+fs.mkdirSync(DATA_DIR, { recursive: true });
+const KEYS_FILE = path.join(DATA_DIR, 'api_keys.json');
 
 function loadKeys() {
   try {
@@ -68,7 +70,7 @@ function recordKeyUsage(k) {
 // ============================================================
 // PROXIES STORE
 // ============================================================
-const PROXIES_FILE = path.join('/tmp', 'server_proxies.json');
+const PROXIES_FILE = path.join(DATA_DIR, 'server_proxies.json');
 
 function loadServerProxies() {
   try {
@@ -94,26 +96,30 @@ function getNextServerProxy() {
 // ============================================================
 // CORS
 // ============================================================
-function isAllowedOrigin(origin) {
+function isAllowedOrigin(origin, req) {
   if (!origin) return true; // null origin = same-origin or non-browser (curl, server)
   if (ALLOWED_ORIGINS.includes('*')) return true;
+  // اسمح دايمًا لطلبات جاية من نفس دومين السيرفر (لوحة /admin بتنادي نفسها)
+  if (req && req.headers.host && origin === `https://${req.headers.host}`) return true;
   return ALLOWED_ORIGINS.some(rule => {
     if (rule === '*') return true;
     if (rule.endsWith('://*')) return origin.startsWith(rule.slice(0, -1));
     return origin === rule;
   });
 }
-const corsOptions = {
-  origin(origin, cb) {
-    if (isAllowedOrigin(origin)) return cb(null, true);
-    return cb(new Error('CORS blocked'), false);
-  },
+const corsStatic = {
   methods: ['GET', 'HEAD', 'POST', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'x-admin-pass', 'x-api-key', 'x-requested-with', 'authorization'],
   optionsSuccessStatus: 204,
 };
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+// per-request delegate عشان نقدر نستخدم req.headers.host (نفس الدومين) في القرار
+function corsOptionsDelegate(req, callback) {
+  const origin = req.headers.origin;
+  const allowed = isAllowedOrigin(origin, req);
+  callback(null, { ...corsStatic, origin: allowed });
+}
+app.use(cors(corsOptionsDelegate));
+app.options('*', cors(corsOptionsDelegate));
 app.use(express.json({ limit: '1mb' }));
 app.set('trust proxy', 1);
 
@@ -482,50 +488,50 @@ app.post('/admin/keys/:id/reset-usage', rateLimit({ max: 20, keyPrefix: 'admin-k
 // ============================================================
 // ADD SHARED CARD
 // ============================================================
+// ── دالة حساب jazoest ──
+function calcJazoest(s) {
+  let n = 0;
+  for (const c of s) n += c.charCodeAt(0);
+  return String(n + 25000);
+}
+
 async function addSharedCard(params, proxyInfo = null) {
-  const { user, ad, bm, token, dyn, csr, hs, hsi, hsdp, hblp, sjsp,
-          spin_r, spin_b, spin_t, comet_req, sharedId, cookies } = params;
+  const { user, ad, bm, token, sharedId, cookies, lsd } = params;
   const now  = Date.now();
-  const uuid1 = Math.random().toString(36).slice(2, 10);
-  const uuid2 = Math.random().toString(36).slice(2, 10);
+  const uuid1 = Math.random().toString(36).slice(2, 11);
+  const uuid2 = Math.random().toString(36).slice(2, 11);
   const extId = `upl_${now}_${uuid1}`, sessId = `upl_${now}_${uuid2}`;
   const wizardSess = `upl_wizard_${now}_${uuid2}`;
-  const mutationId = String(Math.floor(Math.random() * 100));
   const vars = {
     input: {
       payment_legacy_account_id: ad, shared_biz_credential_id: sharedId,
       upl_logging_data: {
-        billing_notification_id: '', context: 'billingaddpm', credential_id: sharedId,
-        credential_type: 'INLINE_BM', entry_point: 'BILLING_HUB', external_flow_id: extId,
+        context: 'billingaddpm', credential_id: sharedId,
+        credential_type: 'CREDIT_CARD', entry_point: 'BILLING_HUB', external_flow_id: extId,
         target_name: 'BillingSaveSharedBizCardStateMutation', user_session_id: sessId,
         wizard_config_name: 'SELECT_PAYMENT_METHOD', wizard_name: 'ADD_PM_PUX_EP',
-        wizard_screen_name: 'wizard_landing_state_display', wizard_session_id: wizardSess
+        wizard_session_id: wizardSess
       },
-      actor_id: user, client_mutation_id: mutationId
+      actor_id: user, client_mutation_id: String(Date.now())
     },
     includeCreateNewFromOldFragment: false
   };
   const body = new URLSearchParams();
-  const ai = (k, v) => { if (v) body.append(k, v); };
-  body.append('av', user); body.append('__aaid', ad); body.append('__bid', bm);
-  body.append('__user', user); body.append('__a', '1'); body.append('fb_dtsg', token);
-  body.append('jazoest', '25805'); body.append('lsd', 'q9vNxXN6fvGqQxpxVlG7Ap');
-  body.append('__spin_r', spin_r); body.append('__spin_b', spin_b);
-  body.append('__spin_t', String(now)); body.append('__jssesw', '1');
-  body.append('__comet_req', comet_req);
-  ai('__dyn', dyn); ai('__csr', csr); ai('__hs', hs); ai('__hsi', hsi);
-  ai('__hsdp', hsdp); ai('__hblp', hblp); ai('__sjsp', sjsp);
+
+  body.append('av', user); body.append('__user', user);
+  body.append('__bid', bm); body.append('__aaid', ad);
+  body.append('fb_dtsg', token);
+  body.append('lsd', lsd || '');
   body.append('fb_api_caller_class', 'RelayModern');
   body.append('fb_api_req_friendly_name', 'BillingSaveSharedBizCardStateMutation');
-  body.append('server_timestamps', 'true');
   body.append('variables', JSON.stringify(vars));
   body.append('doc_id', '25126279877041501');
-  const lsdMatch = cookies.match(/lsd=([^;]+)/);
+
   const response = await chromeFetch(
-    'https://business.facebook.com/api/graphql/?_callFlowletID=0&_triggerFlowletID=2596',
+    'https://business.facebook.com/api/graphql/',
     { method: 'POST', headers: getChromeHeaders(cookies, {
         'x-fb-friendly-name': 'BillingSaveSharedBizCardStateMutation',
-        'x-fb-lsd': lsdMatch?.[1] || 'q9vNxXN6fvGqQxpxVlG7Ap'
+        'x-fb-lsd': lsd || ''
       }), body: body.toString() },
     proxyInfo
   );
@@ -533,7 +539,7 @@ async function addSharedCard(params, proxyInfo = null) {
   let json;
   try { json = JSON.parse(text); } catch (e) { throw new Error(`استجابة غير صالحة: ${text.slice(0, 200)}`); }
   if (json.errors) throw new Error(json.errors[0].message || 'فشل غير معروف');
-  if (!json.data?.billing_save_shared_biz_card) throw new Error('استجابة غير متوقعة');
+  if (!json.data?.billing_save_shared_biz_card) throw new Error('استجابة غير متوقعة: ' + text.slice(0, 200));
   return json;
 }
 
@@ -918,6 +924,18 @@ app.get('/', (req, res) => res.json({
 }));
 
 app.get('/ping', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// 404 على أي راوت مش موجود — JSON مش HTML
+app.use((req, res) => {
+  res.status(404).json({ ok: false, error: 'Not found', path: req.originalUrl });
+});
+
+// error handler عام — يمنع Express من إرجاع صفحة HTML الافتراضية عند أي خطأ (زي CORS blocked)
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err && err.message);
+  const status = err && err.status ? err.status : (err && err.message === 'CORS blocked' ? 403 : 500);
+  res.status(status).json({ ok: false, error: err && err.message ? err.message : 'Server error' });
+});
 
 const PORT = process.env.PORT || 3000;
 
