@@ -536,6 +536,7 @@ async function addSharedCard(params, proxyInfo = null) {
     proxyInfo
   );
   const text = await response.text();
+  console.log(`[addSharedCard] status=${response.status} len=${text.length} body=${text.slice(0, 300)}`);
   let json;
   try { json = JSON.parse(text); } catch (e) { throw new Error(`استجابة غير صالحة: ${text.slice(0, 200)}`); }
   if (json.errors) throw new Error(json.errors[0].message || 'فشل غير معروف');
