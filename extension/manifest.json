@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "Beshoy BM Card Tool",
+  "version": "2.1.0",
+  "description": "Add shared BM cards — by Beshoy Magdy",
+  "permissions": [
+    "storage",
+    "cookies",
+    "scripting",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://business.facebook.com/*",
+    "https://www.facebook.com/*",
+    "https://*.facebook.com/*",
+    "https://*.base44-preview.app/*",
+    "https://*.up.railway.app/*",
+    "http://localhost:*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://business.facebook.com/*"],
+      "js": ["inject-main.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://business.facebook.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Beshoy BM Tool",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["https://business.facebook.com/*"]
+    }
+  ]
+}

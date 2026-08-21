@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Beshoy BM Tool</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  width:310px;min-height:200px;
+  background:#08100d;color:#e0e0e0;
+  font-family:'Inter',sans-serif;
+  padding:0;overflow-x:hidden;
+}
+
+@keyframes glow{0%,100%{text-shadow:0 0 8px #00ffc8}50%{text-shadow:0 0 18px #00ffc8,0 0 32px rgba(0,255,200,.5)}}
+@keyframes led-pulse{
+  0%,100%{box-shadow:0 0 4px currentColor,0 0 8px currentColor;transform:scale(1)}
+  50%{box-shadow:0 0 10px currentColor,0 0 22px currentColor,0 0 34px rgba(0,255,200,.3);transform:scale(1.15)}
+}
+@keyframes led-red-pulse{
+  0%,100%{box-shadow:0 0 4px #ff5050,0 0 8px #ff5050}
+  50%{box-shadow:0 0 10px #ff5050,0 0 20px rgba(255,80,80,.4)}
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Header ── */
+.hdr{
+  background:#0b1e16;border-bottom:2px solid rgba(0,255,200,.2);
+  padding:10px 14px;display:flex;align-items:center;gap:8px;
+}
+.hdr-leds{display:flex;gap:5px;align-items:center}
+.hled{width:7px;height:7px;border-radius:50%}
+.hled.g{background:#00ffc8;box-shadow:0 0 5px #00ffc8}
+.hled.b{background:#3b9eff;box-shadow:0 0 4px #3b9eff}
+.hled.r{background:#ff5050}
+.hdr-title{font-size:13px;font-weight:900;letter-spacing:3px;color:#00ffc8;text-transform:lowercase;animation:glow 3s ease-in-out infinite;flex:1}
+.hdr-ver{font-size:9px;color:rgba(255,255,255,.25);letter-spacing:1px}
+
+/* ── Status bar ── */
+.status-bar{
+  background:#060c09;border-bottom:1px solid rgba(255,255,255,.05);
+  padding:7px 14px;display:flex;align-items:center;gap:7px;min-height:30px;
+}
+.st-dot{width:6px;height:6px;border-radius:50%;background:#333;flex-shrink:0;transition:all .3s}
+.status-bar.ok .st-dot{background:#00ffc8;box-shadow:0 0 6px #00ffc8}
+.status-bar.err .st-dot{background:#ff5050;box-shadow:0 0 6px #ff5050}
+.status-bar.chk .st-dot{background:#f5a623;animation:led-pulse 1s ease-in-out infinite;color:#f5a623}
+.st-txt{font-size:10px;color:rgba(255,255,255,.35);flex:1}
+
+/* ── Sections ── */
+.section{padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.05)}
+
+.lbl{font-size:9px;color:#3e3e3e;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px}
+
+input[type=text],input[type=number],input[type=password]{
+  width:100%;background:#0d0d0d;border:1px solid rgba(255,255,255,.08);
+  border-radius:7px;color:#e0e0e0;padding:7px 10px;font-size:11px;
+  outline:none;font-family:'Inter',sans-serif;
+  transition:border-color .2s;
+}
+input:focus{border-color:rgba(0,255,200,.4)}
+
+/* ── Proxy row ── */
+.proxy-row{display:flex;align-items:center;gap:6px;margin-top:6px}
+.proxy-row input{flex:1}
+.px-led{
+  width:10px;height:10px;border-radius:50%;flex-shrink:0;
+  background:#252535;transition:all .3s;
+}
+.px-led.ok{
+  background:#00ffc8;color:#00ffc8;
+  animation:led-pulse 2s ease-in-out infinite;
+}
+.px-led.fail{background:#ff5050;color:#ff5050;animation:led-red-pulse 1.5s ease-in-out infinite}
+.px-led.checking{background:#f5a623;animation:led-pulse 1s ease-in-out infinite;color:#f5a623}
+
+/* ── Buttons ── */
+button{
+  border:none;border-radius:7px;cursor:pointer;
+  font-family:'Inter',sans-serif;font-weight:700;
+  transition:all .2s;
+}
+.btn-check{
+  background:rgba(59,155,255,.12);color:#3b9eff;
+  border:1px solid rgba(59,155,255,.25)!important;
+  font-size:10px;padding:5px 10px;white-space:nowrap;
+}
+.btn-check:hover{background:rgba(59,155,255,.22)}
+.btn-save{
+  width:100%;height:36px;background:#00ffc8;color:#040f09;
+  font-size:11px;letter-spacing:.5px;margin-top:8px;
+}
+.btn-save:hover{background:#00e6b5;transform:translateY(-1px)}
+.btn-launch{
+  width:100%;height:40px;
+  background:linear-gradient(135deg,#00ffc8,#00b89e);
+  color:#040f09;font-size:12px;letter-spacing:1.5px;
+  border-radius:10px;
+}
+.btn-launch:hover{box-shadow:0 4px 18px rgba(0,255,200,.35);transform:translateY(-1px)}
+.btn-launch:disabled{background:#161616;color:#2a2a2a;cursor:not-allowed;transform:none;box-shadow:none}
+
+.delay-row{display:flex;align-items:center;gap:8px}
+.delay-row input{width:70px}
+.delay-hint{font-size:10px;color:#3e3e3e}
+
+/* ── Footer ── */
+.footer{padding:10px 14px}
+
+/* ── Spinner ── */
+.spin{display:inline-block;animation:spin .8s linear infinite}
+
+/* ── Not on FB ── */
+.not-fb{padding:18px 14px;text-align:center}
+.not-fb .icon{font-size:28px;margin-bottom:8px}
+.not-fb p{font-size:11px;color:rgba(255,255,255,.35);line-height:1.6}
+.not-fb a{color:#00ffc8;text-decoration:none;font-size:11px}
+
+/* Proxy type badge */
+.px-type{font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:rgba(59,155,255,.1);color:#3b9eff;letter-spacing:.5px;white-space:nowrap}
+.px-info{display:flex;align-items:center;gap:5px;margin-top:5px;min-height:16px}
+.px-info-txt{font-size:9px;color:rgba(255,255,255,.25);flex:1}
+
+/* ── Activation screen ── */
+.act-icon{font-size:30px;text-align:center;margin:18px 0 4px}
+.act-title{font-size:12px;text-align:center;color:rgba(255,255,255,.55);margin-bottom:14px;line-height:1.6}
+.act-msg{font-size:10px;text-align:center;min-height:14px;margin-top:2px;transition:color .2s}
+.act-msg.err{color:#ff5050}
+.act-msg.ok{color:#00ffc8}
+.act-msg.chk{color:#f5a623}
+.btn-activate{width:100%;height:38px;background:linear-gradient(135deg,#00ffc8,#00b89e);color:#040f09;font-size:12px;letter-spacing:1px;border-radius:10px;margin-top:4px}
+.btn-activate:hover{box-shadow:0 4px 18px rgba(0,255,200,.35);transform:translateY(-1px)}
+.btn-activate:disabled{background:#161616;color:#2a2a2a;cursor:not-allowed;transform:none;box-shadow:none}
+
+/* ── Header gear (reset) ── */
+.gear-btn{
+  background:transparent;border:none;color:rgba(255,255,255,.25);
+  font-size:13px;cursor:pointer;padding:2px 4px;line-height:1;
+}
+.gear-btn:hover{color:rgba(255,255,255,.6)}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="hdr">
+  <div class="hdr-leds">
+    <div class="hled g"></div>
+    <div class="hled b"></div>
+    <div class="hled r"></div>
+  </div>
+  <div class="hdr-title">beshoy</div>
+  <button class="gear-btn" id="btnReset" title="إعادة ضبط الاتصال" style="display:none">⚙</button>
+  <div class="hdr-ver">v2.0 EXT</div>
+</div>
+
+<!-- ══════════════ ACTIVATION SCREEN (first run only) ══════════════ -->
+<div id="setupView">
+  <div class="act-icon">🔐</div>
+  <div class="act-title">فعّل الأداة لأول مرة<br>بإدخال بيانات السيرفر</div>
+
+  <div class="section">
+    <div class="lbl">🌐 عنوان السيرفر</div>
+    <input type="text" id="setupServerUrl" placeholder="https://3000-...base44-preview.app"/>
+  </div>
+
+  <div class="section">
+    <div class="lbl">🔑 كود التفعيل</div>
+    <input type="password" id="setupApiKey" placeholder="اكتب كود التفعيل هنا" autocomplete="off"/>
+  </div>
+
+  <div class="section" style="padding-top:0">
+    <div class="act-msg" id="setupMsg"></div>
+    <button class="btn-activate" id="btnActivate">🔓 تفعيل</button>
+  </div>
+</div>
+
+<!-- ══════════════ MAIN TOOL VIEW (after activation) ══════════════ -->
+<div id="mainView" style="display:none">
+
+  <!-- Status bar -->
+  <div class="status-bar" id="statusBar">
+    <div class="st-dot"></div>
+    <span class="st-txt" id="statusTxt">جاري التحقق من الاتصال...</span>
+  </div>
+
+  <!-- Proxy -->
+  <div class="section">
+    <div class="lbl">🔒 بروكسي شخصي (اختياري)</div>
+    <div class="proxy-row">
+      <div class="px-led" id="pxLed"></div>
+      <input type="text" id="proxyInput" placeholder="http://user:pass@host:port  أو  socks5://host:port"/>
+      <button class="btn-check" id="btnCheck">🔍</button>
+    </div>
+    <div class="px-info">
+      <span class="px-info-txt" id="pxInfoTxt">فارغ → السيرفر يستخدم بروكسياته تلقائياً</span>
+      <span class="px-type" id="pxTypeBadge" style="display:none"></span>
+    </div>
+  </div>
+
+  <!-- Delay -->
+  <div class="section">
+    <div class="lbl">⏱ تأخير بين البطاقات</div>
+    <div class="delay-row">
+      <input type="number" id="delayInput" min="0" max="60" value="1"/>
+      <span class="delay-hint">ثانية بين كل بطاقة</span>
+    </div>
+  </div>
+
+  <!-- Save -->
+  <div class="section">
+    <button class="btn-save" id="btnSave">💾 حفظ الإعدادات</button>
+  </div>
+
+  <!-- Launch -->
+  <div class="footer" id="footerArea">
+    <button class="btn-launch" id="btnLaunch" disabled>▶ Launch Tool على Facebook</button>
+  </div>
+
+  <!-- Not on FB -->
+  <div class="not-fb" id="notFb" style="display:none">
+    <div class="icon">🌐</div>
+    <p>الأداة تعمل على صفحة<br><strong>business.facebook.com/billing</strong></p>
+    <br>
+    <a href="https://business.facebook.com/billing/payments/" target="_blank">→ افتح الصفحة الآن</a>
+  </div>
+
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>
