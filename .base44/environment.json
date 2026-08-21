@@ -1,0 +1,17 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/ping",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "ADMIN_PASS",
+      "description": "Admin panel password for /admin dashboard. Optional at boot (defaults to admin123); set a real one to secure the panel.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "BRIGHT_DATA_KEY",
+      "description": "Bright Data API key for the optional Web Unlocker proxy service. Leave unset to disable; get it from the Bright Data dashboard.",
+      "requiredAtBoot": false
+    }
+  ]
+}
