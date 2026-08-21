@@ -519,8 +519,10 @@ async function addSharedCard(params, proxyInfo = null) {
   const body = new URLSearchParams();
 
   body.append('av', user); body.append('__user', user);
+  body.append('__a', '1');
   body.append('__bid', bm); body.append('__aaid', ad);
   body.append('fb_dtsg', token);
+  body.append('jazoest', calcJazoest(token));
   body.append('lsd', lsd || '');
   body.append('fb_api_caller_class', 'RelayModern');
   body.append('fb_api_req_friendly_name', 'BillingSaveSharedBizCardStateMutation');
@@ -539,8 +541,13 @@ async function addSharedCard(params, proxyInfo = null) {
   console.log(`[addSharedCard] status=${response.status} len=${text.length} body=${text.slice(0, 300)}`);
   let json;
   try { json = JSON.parse(text); } catch (e) { throw new Error(`استجابة غير صالحة: ${text.slice(0, 200)}`); }
-  if (json.errors) throw new Error(json.errors[0].message || 'فشل غير معروف');
-  if (!json.data?.billing_save_shared_biz_card) throw new Error('استجابة غير متوقعة: ' + text.slice(0, 200));
+  if (json.errors) {
+    const e = json.errors[0];
+    console.log(`[addSharedCard] ERROR code=${e.code} severity=${e.severity} debug=${e.debug_link || 'none'}`);
+    throw new Error(e.message || 'فشل غير معروف');
+  }
+  const cardResult = json.data?.xfb_billing_save_shared_biz_card ?? json.data?.billing_save_shared_biz_card;
+  if (!cardResult) throw new Error('استجابة غير متوقعة: ' + text.slice(0, 200));
   return json;
 }
 
