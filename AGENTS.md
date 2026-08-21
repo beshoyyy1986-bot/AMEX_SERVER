@@ -23,6 +23,13 @@ docker compose -f docker-compose.base44.yml up -d
 - `ALLOWED_ORIGINS` — set to `*` for dev so the preview origin is accepted.
 - `DATA_DIR` — defaults to `/data`.
 
+## Chrome Extension (`extension/`)
+The companion Chrome extension (`extension/`) talks to this server from `business.facebook.com`.
+- Load it as an unpacked extension from the `extension/` folder.
+- Activation screen lets the user enter the server URL + API key (stored in chrome.storage).
+- Configured for base44: `host_permissions` includes `https://*.base44-preview.app/*`, and `DEFAULT_SERVER` points to the base44 preview URL. Previously pointed at a dead Railway URL (`web-production-23fa8.up.railway.app`) with no base44 host permission — that's why it failed on Railway.
+
 ## Notes
 - CORS is origin-checked; `ALLOWED_ORIGINS=*` is required for the preview to call API endpoints from the browser.
 - No external services are required to boot. Bright Data is the only optional external credential.
+- `ADMIN_PASS` MUST come only from `/run/base44/app.env` (secret) — never put it under compose `environment:` or it overrides the secret permanently.
