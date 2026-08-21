@@ -517,24 +517,31 @@ async function addSharedCard(params, proxyInfo = null) {
     includeCreateNewFromOldFragment: false
   };
   const body = new URLSearchParams();
-
   body.append('av', user); body.append('__user', user);
-  body.append('__a', '1');
   body.append('__bid', bm); body.append('__aaid', ad);
   body.append('fb_dtsg', token);
-  body.append('jazoest', calcJazoest(token));
-  body.append('lsd', lsd || '');
   body.append('fb_api_caller_class', 'RelayModern');
   body.append('fb_api_req_friendly_name', 'BillingSaveSharedBizCardStateMutation');
   body.append('variables', JSON.stringify(vars));
   body.append('doc_id', '25126279877041501');
 
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'ar,en-US;q=0.7',
+    'Cookie': cookies,
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Referer': 'https://business.facebook.com',
+    'X-FB-LSD': lsd || '',
+    'X-FB-Friendly-Name': 'BillingSaveSharedBizCardStateMutation',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+  };
+
   const response = await chromeFetch(
     'https://business.facebook.com/api/graphql/',
-    { method: 'POST', headers: getChromeHeaders(cookies, {
-        'x-fb-friendly-name': 'BillingSaveSharedBizCardStateMutation',
-        'x-fb-lsd': lsd || ''
-      }), body: body.toString() },
+    { method: 'POST', headers, body: body.toString() },
     proxyInfo
   );
   const text = await response.text();
