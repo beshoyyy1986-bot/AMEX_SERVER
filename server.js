@@ -232,7 +232,8 @@ function getChromeHeaders(cookies, extra = {}) {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'accept': '*/*', 'origin': 'https://business.facebook.com',
     'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty',
-    'referer': 'https://business.facebook.com/billing/payments/',
+    // ★ FIX: كان مثبّت على مسار وهمي /billing/payments/ — الأداة الشغالة بتبعت الـ origin بس
+    'referer': 'https://business.facebook.com/',
     'accept-encoding': 'gzip, deflate, br', 'accept-language': 'en-US,en;q=0.9',
     'cookie': cookies, ...extra
   };
@@ -802,9 +803,9 @@ app.post('/fetch-cards', rateLimit({ max: 20, keyPrefix: 'fetch-cards' }), apiAu
     console.log(`[fetch-cards] Step 1: get billing account ID — user=${userId} bm=${businessId} ad=${adId}`);
     const r1 = await fbGraphql(SESSION_ORIGIN, {
       av: userId, __user: userId, __bid: businessId, __aaid: adId,
-      __a: '1',
+      // ★ FIX: شلت __a:'1' و jazoest — مش موجودين في الأداة الشغالة (ccFromBm.js)
+      // و jazoest كانت بصيغة غلط أصلاً (مش خوارزمية فيسبوك الحقيقية)
       fb_dtsg,
-      jazoest: calcJazoest(fb_dtsg),
       lsd,
       fb_api_caller_class: 'RelayModern',
       fb_api_req_friendly_name: 'BillingHubPaymentMethodsViewQuery',
@@ -825,9 +826,7 @@ app.post('/fetch-cards', rateLimit({ max: 20, keyPrefix: 'fetch-cards' }), apiAu
     console.log(`[fetch-cards] Step 2: get card list — payAccountId=${payAccountId}`);
     const r2 = await fbGraphql(SESSION_ORIGIN, {
       av: userId, __user: userId, __bid: businessId, __aaid: adId,
-      __a: '1',
       fb_dtsg,
-      jazoest: calcJazoest(fb_dtsg),
       lsd,
       fb_api_caller_class: 'RelayModern',
       fb_api_req_friendly_name: 'BillingHubPaymentMethodsBusinessSectionQuery',
@@ -923,10 +922,9 @@ async function addSharedCard(params, proxyInfo = null) {
   const body = new URLSearchParams();
 
   body.append('av', user); body.append('__user', user);
-  body.append('__a', '1');
+  // ★ FIX: شلت __a:'1' و jazoest — نفس سبب التعديل في fbGraphql فوق
   body.append('__bid', bm); body.append('__aaid', ad);
   body.append('fb_dtsg', token);
-  body.append('jazoest', calcJazoest(token));
   body.append('lsd', lsd || '');
   body.append('fb_api_caller_class', 'RelayModern');
   body.append('fb_api_req_friendly_name', 'BillingSaveSharedBizCardStateMutation');
