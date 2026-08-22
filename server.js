@@ -486,31 +486,38 @@ app.post('/admin/keys/:id/reset-usage', rateLimit({ max: 20, keyPrefix: 'admin-k
 });
 
 // ============================================================
-// SERVER-SIDE SESSION RESOLUTION (port of ccFromBm.js getSession)
+// SESSION RESOLUTION — metaTokens engine (ported from metaTokens.js)
 // ============================================================
-// يحل مشكلة الـ 6 root causes:
-//   1. الـ extension كان بيعمل fetch() مباشر لـ FB GraphQL → محجوب بسبب CSP
-//   2. inject-main.js كان بيعتمد على require() الداخلي لـ FB → fragile
-//   3. document.cookie مبيشملش httpOnly cookies زي xs
-//   4. lsd=x placeholder بدل القيمة الحقيقية
-//   5. مفيش server-side session resolution
-//   6. /add-cards كان بيستقبل بيانات فاسدة من upstream
-//
-// المنطق: السيرفر بيجيب صفحة الفوترة HTML بالكوكيز → يـ parse fb_dtsg + lsd
-// من الـ HTML → يستخدمهم في GraphQL calls. نفس الطريقة اللي بتشتغل في ccFromBm.js.
+// استراتيجيات استخراج متعددة بالترتيب من الأقوى للأضعف:
+//   1. Multi-URL HTTP + redirect:follow (يتبع الـ redirect تلقائياً)
+//   2. Script blocks deep parse
+//   3. Cookie-only dtsg fallback
 
 const SESSION_ORIGIN = 'https://business.facebook.com';
 
 const SESSION_HEADERS = {
-  'User-Agent':  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept':      'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'ar,en-US;q=0.7,en;q=0.5',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'ar,en-US;q=0.7,en;q=0.3',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'none',
+  'Upgrade-Insecure-Requests': '1',
 };
 
-/** Extract c_user (userId) from a cookie string */
+// ── Cookie helpers ──────────────────────────────────────────────────────────
+
 function extractUserIdFromCookies(cookieStr) {
-  const m = cookieStr.match(/\bc_user=([^;]+)/);
-  return m ? m[1] : '';
+  const m = String(cookieStr || '').match(/(?:^|;\s*)c_user=([^;]+)/);
+  return m ? m[1].trim() : '';
+}
+
+function extractDtsgFromCookies(cookieStr) {
+  const s = String(cookieStr || '');
+  for (const name of ['fb_dtsg', 'dtsg_ag', 'dtsg']) {
+    const m = s.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+    if (m) { try { return decodeURIComponent(m[1].trim()); } catch { return m[1].trim(); } }
+  }
+  return '';
 }
 
 /** Extract business_id and ad_account_id from URL or bare ID string */
@@ -518,175 +525,207 @@ function parseBillingUrl(url) {
   let businessId = '';
   let adAccountId = '';
   if (!url) return { businessId, adAccountId };
-
-  // Extract business_id
   try {
     const u = new URL(url);
     businessId = u.searchParams.get('business_id') || '';
-  } catch (e) {
-    // not a URL — might be a bare ID
-  }
-  if (!businessId) {
-    const m = url.match(/[?&]business_id=(\d+)/);
-    if (m) businessId = m[1];
-  }
-
-  // Extract ad_account_id (act_XXXXXXXX format or bare digits)
-  const actMatch = url.match(/act_(\d+)/);
-  if (actMatch) adAccountId = actMatch[1];
-  if (!adAccountId) {
-    const m = url.match(/[?&]act_(\d+)/);
-    if (m) adAccountId = m[1];
-  }
-  if (!adAccountId) {
-    const m = url.match(/[?&]account_id=(\d+)/);
-    if (m) adAccountId = m[1];
-  }
-  // Try path segments for act_ pattern
-  if (!adAccountId) {
-    const m = url.match(/\/act_(\d+)/);
-    if (m) adAccountId = m[1];
-  }
-
+    for (const p of ['act', 'act_id', 'ad_account_id', 'account_id', 'aaid']) {
+      const v = u.searchParams.get(p);
+      if (v) { adAccountId = v.replace(/^act_/i, ''); break; }
+    }
+    if (!adAccountId) {
+      const pm = u.pathname.match(/act_(\d+)/);
+      if (pm) adAccountId = pm[1];
+    }
+  } catch (_) {}
+  if (!businessId) { const m = url.match(/[?&]business_id=(\d+)/); if (m) businessId = m[1]; }
+  if (!adAccountId) { const m = url.match(/act_(\d+)/); if (m) adAccountId = m[1]; }
+  if (!adAccountId) { const m = url.match(/[?&]account_id=(\d+)/); if (m) adAccountId = m[1]; }
   return { businessId, adAccountId };
 }
 
-/**
- * Server-side session resolution — fetches FB page HTML and parses
- * fb_dtsg and lsd from the response. Port of ccFromBm.js getSession().
- * @param {string} cookies - Full cookie string (including httpOnly like xs)
- * @param {string} billingUrl - The billing page URL to fetch
- * @param {object|null} proxyInfo - Parsed proxy from parseProxy()
- * @returns {{ dtsg: string, lsd: string, userId: string }}
- */
-async function serverSideSession(cookies, billingUrl, proxyInfo = null) {
-  const userId = extractUserIdFromCookies(cookies);
-  if (!userId) {
-    throw new Error('لم يتم العثور على c_user في الكوكيز — الكوكيز غير صالحة');
-  }
+// ── HTML parsers (metaTokens.js quality) ───────────────────────────────────
 
-  // URLs to try for fetching fb_dtsg and lsd (fallback chain)
+function _first(str, patterns, filter) {
+  if (!str) return null;
+  for (const p of patterns) {
+    const m = str.match(p);
+    if (m?.[1]) {
+      const val = m[1].trim();
+      if (!filter || filter(val)) return val;
+    }
+  }
+  return null;
+}
+
+function parseDtsg(html) {
+  if (!html) return '';
+  const notEaa = (v) => v && !v.startsWith('EAA');
+  return _first(html, [
+    // Highest confidence — explicit DTSGInitialData structure
+    /DTSGInitialData[^}]{0,300}"token"\s*:\s*"([^"]{8,100})"/,
+    /"DTSGInitialData"[^}]{0,300}"token"\s*:\s*"([^"]{8,100})"/,
+    // Direct dtsg object
+    /"dtsg"\s*:\s*\{\s*"token"\s*:\s*"([^"]+)"/,
+    // HTML form hidden input
+    /name="fb_dtsg"\s+value="([^"]+)"/,
+    /name="fb_dtsg"\s+value='([^']+)'/,
+    // Relay store formats
+    /"fb_dtsg"\s*,\s*"[^"]*"\s*,\s*"([^"]+)"/,
+    /"s"\s*:\s*"fb_dtsg"\s*,\s*"v"\s*:\s*"([^"]+)"/,
+    // Known prefixes
+    /"token"\s*:\s*"(NAf[A-Za-z0-9_-]+)"/,
+    /"token"\s*:\s*"(NACP[A-Za-z0-9_-]+)"/,
+    /"token"\s*:\s*"(NAfw[A-Za-z0-9_-]+)"/,
+    /"token"\s*:\s*"(NAcP[A-Za-z0-9_-]+)"/,
+    /"token"\s*:\s*"(NAbb[A-Za-z0-9_-]+)"/,
+    // Direct key
+    /"fb_dtsg"\s*:\s*"([A-Za-z0-9_-]{8,})"/,
+    // Global var
+    /__DTSG\s*=\s*['"]([A-Za-z0-9_-]+)['"]/,
+    // Broad fallback — last resort
+    /"token"\s*:\s*"([A-Za-z0-9_-]{12,80})"/,
+  ], notEaa) || '';
+}
+
+function parseLsd(html) {
+  if (!html) return '';
+  return _first(html, [
+    /\["LSD",\[\d+\],\{"token":"([^"]+)"\}\]/,
+    /\["LSD",\[\d+\],\{token:"([^"]+)"\}\]/,
+    /"lsd"\s*:\s*"([^"]+)"/,
+    /name="lsd"\s+value="([^"]+)"/,
+    /"lsdToken"\s*:\s*"([^"]+)"/,
+    /\["LSD",[^\]]*,"([A-Za-z0-9_-]{4,20})"\]/,
+    /<meta\s+name="lsd"\s+content="([^"]+)"/,
+  ]) || '';
+}
+
+function parseUserIdFromHtml(html) {
+  if (!html) return '';
+  return _first(html, [
+    /"actorID"\s*:\s*"(\d{6,})"/,
+    /"userID"\s*:\s*"(\d{6,})"/,
+    /"USER_ID"\s*:\s*"(\d{6,})"/,
+    /"viewer_actor_id"\s*:\s*"(\d{6,})"/,
+    /"uid"\s*:\s*(\d{6,})/,
+    /"uid"\s*:\s*"(\d{6,})"/,
+  ]) || '';
+}
+
+/** Extract from all <script> blocks separately — catches split payloads */
+function extractFromAllScripts(html) {
+  if (!html) return { dtsg: '', lsd: '' };
+  const blocks = html.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+  const joined = blocks
+    .map((s) => { const m = s.match(/<script[^>]*>([\s\S]*?)<\/script>/i); return m ? m[1] : ''; })
+    .join('\n');
+  return {
+    dtsg: parseDtsg(joined) || parseDtsg(html),
+    lsd:  parseLsd(joined)  || parseLsd(html),
+  };
+}
+
+// ── Main session resolver ───────────────────────────────────────────────────
+
+/**
+ * Server-side session resolution — metaTokens quality.
+ * Tries multiple URLs with redirect:follow + deep script extraction.
+ * Fallback to cookie-embedded dtsg if HTTP fails.
+ *
+ * @param {string} cookies - Full cookie string (including httpOnly xs)
+ * @param {string} pageUrl  - Actual URL the user has open (best signal)
+ * @param {object|null} proxyInfo
+ * @returns {{ dtsg, lsd, userId }}
+ */
+async function serverSideSession(cookies, pageUrl, proxyInfo = null) {
+  const userId = extractUserIdFromCookies(cookies) || parseUserIdFromHtml('');
+  if (!userId) throw new Error('لم يتم العثور على c_user في الكوكيز — يجب تسجيل الدخول أولاً');
+
+  const bId = parseBillingUrl(pageUrl).businessId;
+
+  // Priority URL list — /latest/ first (current FB schema), then legacy paths
   const urlsToTry = [
-    billingUrl,
-    `${SESSION_ORIGIN}/billing_hub/payment_accounts/?business_id=${parseBillingUrl(billingUrl).businessId || ''}`,
+    pageUrl,
+    bId ? `${SESSION_ORIGIN}/latest/billing_hub/?business_id=${bId}` : '',
+    bId ? `${SESSION_ORIGIN}/latest/billing_hub/payment_accounts/?business_id=${bId}` : '',
+    bId ? `${SESSION_ORIGIN}/latest/settings/?business_id=${bId}` : '',
+    bId ? `${SESSION_ORIGIN}/billing_hub/payment_accounts/?business_id=${bId}` : '',
     `${SESSION_ORIGIN}/settings/billing/payment_methods/`,
     `${SESSION_ORIGIN}/billing_hub/`,
+    bId ? `${SESSION_ORIGIN}/overview?business_id=${bId}` : '',
+    `${SESSION_ORIGIN}/`,
+    'https://www.facebook.com/',
+    'https://www.facebook.com/adsmanager/manage/campaigns',
+    'https://adsmanager.facebook.com/adsmanager/',
   ].filter(Boolean);
 
   let dtsg = '';
-  let lsd = '';
+  let lsd  = '';
 
-  for (const url of urlsToTry) {
+  for (const url of [...new Set(urlsToTry)]) {
     try {
-      console.log(`[serverSideSession] fetching: ${url.slice(0, 80)}...`);
+      console.log(`[session] fetching: ${url.slice(0, 90)}`);
       const resp = await chromeFetch(url, {
         method: 'GET',
-        headers: {
-          ...SESSION_HEADERS,
-          'Cookie': cookies,
-          'Referer': SESSION_ORIGIN,
-        },
-        redirect: 'manual', // don't follow redirects automatically — we want to see the page
+        headers: { ...SESSION_HEADERS, 'Cookie': cookies, 'Referer': SESSION_ORIGIN },
+        redirect: 'follow',   // ★ let node-fetch follow 302s automatically
       }, proxyInfo);
 
-      const text = await resp.text();
-      console.log(`[serverSideSession] response: status=${resp.status} len=${text.length}`);
-
-      // If redirect (3xx), try next URL
-      if (resp.status >= 300 && resp.status < 400) {
-        const location = resp.headers.get('location');
-        if (location) {
-          console.log(`[serverSideSession] redirect → ${location.slice(0, 80)}`);
-          // Try following the redirect manually
-          try {
-            const redirResp = await chromeFetch(location, {
-              method: 'GET',
-              headers: {
-                ...SESSION_HEADERS,
-                'Cookie': cookies,
-                'Referer': SESSION_ORIGIN,
-              },
-            }, proxyInfo);
-            const redirText = await redirResp.text();
-            dtsg = dtsg || parseDtsg(redirText);
-            lsd  = lsd  || parseLsd(redirText);
-          } catch (redirErr) {
-            console.log(`[serverSideSession] redirect fetch failed: ${redirErr.message}`);
-          }
-        }
+      // Skip if landed on login / checkpoint
+      const finalUrl = resp.url || url;
+      if (/login|checkpoint|recover|disabled/i.test(finalUrl)) {
+        console.log(`[session] auth wall at ${finalUrl.slice(0, 80)} — skipping`);
         continue;
       }
 
-      // Parse fb_dtsg from HTML
-      dtsg = dtsg || parseDtsg(text);
-      lsd  = lsd  || parseLsd(text);
+      const html = await resp.text();
+      console.log(`[session] status=${resp.status} len=${html.length} finalUrl=${finalUrl.slice(0, 80)}`);
 
-      if (dtsg && lsd) break; // Got both — done
+      if (resp.status < 200 || resp.status >= 400) continue;
+
+      // Try full HTML first, then isolated script blocks
+      const fromHtml = { dtsg: parseDtsg(html), lsd: parseLsd(html) };
+      const fromScripts = (!fromHtml.dtsg || !fromHtml.lsd) ? extractFromAllScripts(html) : fromHtml;
+
+      dtsg = dtsg || fromHtml.dtsg || fromScripts.dtsg;
+      lsd  = lsd  || fromHtml.lsd  || fromScripts.lsd;
+
+      if (dtsg && lsd) {
+        console.log(`[session] ✅ dtsg=${dtsg.slice(0, 12)}… lsd=${lsd} userId=${userId}`);
+        break;
+      }
     } catch (err) {
-      console.log(`[serverSideSession] fetch failed for ${url.slice(0, 60)}: ${err.message}`);
-      // Continue to next URL
+      console.log(`[session] fetch error (${url.slice(0, 60)}): ${err.message}`);
     }
   }
 
-  // If still no lsd, try meta tag approach from any successful fetch
-  // (lsd is often in <meta name="lsd" content="...">)
-  console.log(`[serverSideSession] result: dtsg=${dtsg ? dtsg.slice(0,10)+'...' : 'MISSING'} lsd=${lsd || 'MISSING'} userId=${userId}`);
+  // ── Cookie-only dtsg fallback (weak — no lsd, but functional) ──
+  if (!dtsg) {
+    const cookieDtsg = extractDtsgFromCookies(cookies);
+    if (cookieDtsg) {
+      console.log(`[session] ⚠️ using cookie-embedded dtsg (no lsd) — strategy=cookie_dtsg`);
+      dtsg = cookieDtsg;
+    }
+  }
+
+  console.log(`[session] final: dtsg=${dtsg ? dtsg.slice(0, 12) + '…' : 'MISSING'} lsd=${lsd || 'MISSING'} userId=${userId}`);
 
   if (!dtsg) {
-    throw new Error('تعذّر استخراج fb_dtsg — الكوكيز منتهية أو الحساب موقوف');
+    throw new Error(
+      'تعذّر استخراج fb_dtsg — تأكد من: (1) أنك فاتح صفحة business.facebook.com، ' +
+      '(2) الكوكيز لم تنته، (3) الحساب غير موقوف أو موقوف مؤقتاً.'
+    );
   }
 
   return { dtsg, lsd, userId };
 }
 
-/** Parse fb_dtsg from HTML text using multiple regex patterns */
-function parseDtsg(html) {
-  // Pattern 1: "dtsg":{"token":"VALUE"}
-  let m = html.match(/"dtsg":\s*\{"token":"([^"]+)"/);
-  if (m) return m[1];
-  // Pattern 2: DTSGInitData..."token":"VALUE"
-  m = html.match(/DTSGInit(?:ial)?Data[^"']*"token":"([^"]+)"/);
-  if (m) return m[1];
-  // Pattern 3: name="fb_dtsg" value="VALUE" (form hidden input)
-  m = html.match(/name="fb_dtsg"\s+value="([^"]+)"/);
-  if (m) return m[1];
-  // Pattern 4: generic "token":"LONGVALUE" in script blocks
-  m = html.match(/"token"\s*:\s*"([A-Za-z0-9_\-]{20,})"/);
-  if (m) return m[1];
-  return '';
-}
-
-/** Parse lsd from HTML text using multiple regex patterns */
-function parseLsd(html) {
-  // Pattern 1: "lsd":{"token":"VALUE"} or "lsd":"VALUE"
-  let m = html.match(/"lsd"\s*:\s*"([^"]+)"/);
-  if (m) return m[1];
-  // Pattern 2: <meta name="lsd" content="VALUE" />
-  m = html.match(/<meta\s+name="lsd"\s+content="([^"]+)"/);
-  if (m) return m[1];
-  // Pattern 3: LSD module token
-  m = html.match(/LSD[^"']*"token"\s*:\s*"([^"]+)"/);
-  if (m) return m[1];
-  return '';
-}
-
 // ============================================================
 // FB GRAPHQL HELPER (server-side)
 // ============================================================
-/**
- * Make a Facebook GraphQL API call from the server.
- * @param {string} origin - e.g. 'https://business.facebook.com'
- * @param {object} params - GraphQL parameters (av, __user, fb_dtsg, lsd, doc_id, variables, etc.)
- * @param {string} cookies - Full cookie string
- * @param {string} lsd - The real lsd value
- * @param {object|null} proxyInfo - Parsed proxy info
- * @returns {object} Parsed JSON response
- */
 async function fbGraphql(origin, params, cookies, lsd, proxyInfo = null) {
   const body = new URLSearchParams();
-  for (const [key, val] of Object.entries(params)) {
-    body.append(key, String(val));
-  }
+  for (const [key, val] of Object.entries(params)) body.append(key, String(val));
 
   const headers = getChromeHeaders(cookies, {
     'x-fb-friendly-name': params.fb_api_req_friendly_name || 'GraphQL',
@@ -700,7 +739,6 @@ async function fbGraphql(origin, params, cookies, lsd, proxyInfo = null) {
   );
 
   const text = await resp.text();
-  // Strip "for (;;);" JSON-hijack prefix if present
   const clean = text.replace(/^for\s*\(;;\s*\);?/, '');
   try {
     return JSON.parse(clean);
@@ -714,9 +752,9 @@ async function fbGraphql(origin, params, cookies, lsd, proxyInfo = null) {
 // FETCH CARDS ENDPOINT (NEW — fixes root causes 1-5)
 // ============================================================
 app.post('/fetch-cards', rateLimit({ max: 20, keyPrefix: 'fetch-cards' }), apiAuth, async (req, res) => {
-  const { cookies, businessId, adAccountId, proxy: userProxy } = req.body;
+  const { cookies, businessId, adAccountId, proxy: userProxy, pageUrl } = req.body;
 
-  if (!cookies) return res.status(400).json({ ok: false, error: 'الكوكيز مطلوبة' });
+  if (!cookies)    return res.status(400).json({ ok: false, error: 'الكوكيز مطلوبة' });
   if (!businessId) return res.status(400).json({ ok: false, error: 'business_id مطلوب' });
 
   // Resolve proxy
@@ -736,8 +774,10 @@ app.post('/fetch-cards', rateLimit({ max: 20, keyPrefix: 'fetch-cards' }), apiAu
 
   try {
     // Step 0: Resolve session server-side (fb_dtsg + lsd + userId)
-    const billingUrl = `${SESSION_ORIGIN}/billing_hub/payment_accounts/?business_id=${businessId}`;
-    const session = await serverSideSession(cookies, billingUrl, proxyInfo);
+    // ★ Use the actual page URL sent by the extension — best starting point
+    const startUrl = pageUrl ||
+      `${SESSION_ORIGIN}/latest/billing_hub/?business_id=${businessId}`;
+    const session = await serverSideSession(cookies, startUrl, proxyInfo);
 
     const { dtsg: fb_dtsg, lsd, userId } = session;
 
