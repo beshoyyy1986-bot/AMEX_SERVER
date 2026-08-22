@@ -858,11 +858,18 @@ app.post('/fetch-cards', rateLimit({ max: 20, keyPrefix: 'fetch-cards' }), apiAu
       return res.json({ ok: false, error: errMsg });
     }
 
+    // ★ DEBUG: نطبع أول credential خام كامل — لو المشكلة استمرت في add-cards
+    // هيبين لنا كل الحقول الحقيقية اللي فيسبوك بيرجعها بدل ما نخمن
+    console.log(`[fetch-cards] raw credential[0]: ${JSON.stringify(methods[0]?.credential)}`);
+
     // Parse cards
+    // ★ FIX: الكود الشغال (ccFromBm.js) بيستخدم credential_id بس — مفيش حقل
+    // اسمه shared_biz_credential_id في الرد أصلاً، وده كان بيدي undefined
+    // أو قيمة غلط في بعض الحالات
     const cards = methods
       .map(m => ({
         ...m.credential,
-        sharedId: m.credential.shared_biz_credential_id || m.credential.credential_id,
+        sharedId: m.credential.credential_id,
         name: m.credential.card_association_name || '',
         last4: m.credential.last_four_digits || '',
       }))
@@ -907,6 +914,14 @@ function calcJazoest(s) {
   return String(n + 25000);
 }
 
+// ★ FIX: headers مطابقة تمامًا للكود الشغال (ccFromBm.js) — مستخدمة في addSharedCard
+// بس، لأن فيسبوك بيطبّق فحوصات أشد على الـ mutations عن queries القراءة
+const MINIMAL_FB_HEADERS = {
+  'User-Agent':  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept':      'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'ar,en-US;q=0.7',
+};
+
 async function addSharedCard(params, proxyInfo = null) {
   const { user, ad, bm, token, sharedId, cookies, lsd, payAccountId } = params;
   const now  = Date.now();
@@ -945,10 +960,17 @@ async function addSharedCard(params, proxyInfo = null) {
 
   const response = await chromeFetch(
     'https://business.facebook.com/api/graphql/',
-    { method: 'POST', headers: getChromeHeaders(cookies, {
-        'x-fb-friendly-name': 'BillingSaveSharedBizCardStateMutation',
-        'x-fb-lsd': lsd || ''
-      }), body: body.toString() },
+    { method: 'POST', headers: {
+        ...MINIMAL_FB_HEADERS,
+        'Cookie': cookies,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Referer': 'https://business.facebook.com',
+        'X-FB-LSD': lsd || '',
+        'X-FB-Friendly-Name': 'BillingSaveSharedBizCardStateMutation',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Dest': 'empty',
+      }, body: body.toString() },
     proxyInfo
   );
   const text = await response.text();
