@@ -1091,12 +1091,13 @@ app.get('/admin', rateLimit({ max: 20, keyPrefix: 'admin' }), (req, res) => {
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Admin Login</title>
 <style>
-*{box-sizing:border-box} body{margin:0;font-family:'Segoe UI',sans-serif;background:#07090d;color:#eaeaea;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
-.box{width:min(420px,100%);background:#0d0d12;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:28px;box-shadow:0 12px 30px rgba(0,0,0,.25)}
-h1{margin:0 0 8px;font-size:26px;color:#7c6fff;text-align:center}
-p{margin:0 0 20px;color:#a7a7b5;text-align:center;font-size:13px;line-height:1.7}
-form{display:flex;flex-direction:column;gap:12px} input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.08);background:#070710;color:#fff;font-size:14px;outline:none} input:focus{border-color:rgba(124,111,255,.6)}
-button{padding:12px;border:none;border-radius:10px;background:#7c6fff;color:#fff;font-size:14px;font-weight:700;cursor:pointer}
+*{box-sizing:border-box} body{margin:0;font-family:'Segoe UI',sans-serif;background:#05060a;color:#eaeaea;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+.box{width:min(420px,100%);background:#12121b;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:28px;box-shadow:0 12px 30px rgba(0,0,0,.4)}
+h1{margin:0 0 8px;font-size:26px;color:#9b8fff;text-align:center}
+p{margin:0 0 20px;color:#a7abbd;text-align:center;font-size:13px;line-height:1.7}
+form{display:flex;flex-direction:column;gap:12px} input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.16);background:#1c1c2b;color:#fff;font-size:14px;outline:none} input::placeholder{color:#6b7182} input:focus{border-color:#8f7fff;box-shadow:0 0 0 3px rgba(139,124,255,.2)}
+button{padding:12px;border:none;border-radius:10px;background:#8f7fff;color:#fff;font-size:14px;font-weight:700;cursor:pointer}
+button:hover{background:#7a6bf0}
 </style>
 </head>
 <body>
@@ -1195,11 +1196,13 @@ button{border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight
   <div class="card">
     <h2>➕ إضافة بروكسي</h2>
     <input id="proxyInput" style="width:100%;margin-bottom:8px" placeholder="http://user:pass@host:port  أو  socks5://...  أو  host:port:user:pass"/>
+    <select id="proxyCountrySel" style="width:100%;margin-bottom:8px"></select>
     <button class="btn-main" onclick="addProxy()">إضافة + فحص فوري</button>
     <div id="msg"></div>
   </div>
   <div class="card">
     <h2>📋 بروكسيات السيرفر</h2>
+    <select id="proxyFilterSel" style="width:100%;margin-bottom:8px"></select>
     <button class="check-all-btn" onclick="checkAll()">🔄 فحص الكل</button>
     <div class="list" id="proxyList">جاري التحميل...</div>
   </div>
@@ -1268,27 +1271,64 @@ async function api(method, path, body) {
 }
 
 // ════════════ PROXIES ════════════
+let ALL_COUNTRIES = [];      // من السيرفر: [[code,label], ...]
+let proxyFilterCountry = ''; // فلتر العرض الحالي
+let countrySelectsBuilt = false;
+
+function buildCountrySelects() {
+  if (countrySelectsBuilt || !ALL_COUNTRIES.length) return;
+  countrySelectsBuilt = true;
+  const addOpts = '<option value="">بدون دولة (رواتيشن عام)</option>' +
+    ALL_COUNTRIES.map(([c,l]) => \`<option value="\${c}">\${l}</option>\`).join('');
+  document.getElementById('proxyCountrySel').innerHTML = addOpts;
+  const filterOpts = '<option value="">كل الدول</option>' +
+    ALL_COUNTRIES.map(([c,l]) => \`<option value="\${c}">\${l}</option>\`).join('');
+  const filterSel = document.getElementById('proxyFilterSel');
+  filterSel.innerHTML = filterOpts;
+  filterSel.onchange = () => { proxyFilterCountry = filterSel.value; loadProxies(); };
+}
+
+// وقت نسبي: "منذ 5 دقايق" بدل التاريخ الكامل
+function timeAgo(iso) {
+  if (!iso) return null;
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 0 || isNaN(diff)) return null;
+  const m = Math.floor(diff/60000), h = Math.floor(diff/3600000), d = Math.floor(diff/86400000);
+  if (m < 1) return 'الآن';
+  if (m < 60) return \`منذ \${m} دقيقة\`;
+  if (h < 24) return \`منذ \${h} ساعة\`;
+  if (d < 30) return \`منذ \${d} يوم\`;
+  return new Date(iso).toLocaleDateString('ar');
+}
+
 async function loadProxies() {
   let data;
   try { data=await api('GET','/admin/proxies'); } catch(e){ document.getElementById('proxyList').innerHTML='<div style="color:#ff6060;font-size:12px;padding:8px">❌ فشل تحميل البروكسيات: '+e.message+'</div>'; return; }
-  const list = data.proxies || [];
+  ALL_COUNTRIES = data.countries || [];
+  buildCountrySelects();
+  let list = data.proxies || [];
   document.getElementById('pTotal').textContent = list.length;
   document.getElementById('pActive').textContent = list.filter(p=>p.enabled&&p.lastStatus==='ok').length;
   document.getElementById('pDead').textContent  = list.filter(p=>p.lastStatus==='dead').length;
+  if (proxyFilterCountry) list = list.filter(p => p.country === proxyFilterCountry);
   const el = document.getElementById('proxyList');
-  if (!list.length){el.innerHTML='<div style="color:#333;font-size:12px;padding:8px">لا توجد بروكسيات</div>';return;}
+  if (!list.length){el.innerHTML='<div style="color:#333;font-size:12px;padding:8px">لا توجد بروكسيات'+(proxyFilterCountry?' لهذه الدولة':'')+'</div>';return;}
+  const countryOptsFor = sel => '<option value="">بدون دولة</option>' +
+    ALL_COUNTRIES.map(([c,l]) => \`<option value="\${c}" \${c===sel?'selected':''}>\${l}</option>\`).join('');
   el.innerHTML = list.map(p=>{
     const isOk=p.enabled&&p.lastStatus==='ok', isDead=p.lastStatus==='dead';
     const lc=isOk?'green':isDead?'red':'gray', rc=isOk?'ok':isDead?'dead':'';
     const tc=(p.type||'').includes('SOCKS')?'badge-socks':'badge-http';
-    const chk=p.lastCheck?new Date(p.lastCheck).toLocaleTimeString('ar'):'—';
+    const chk=timeAgo(p.lastCheck) || '—';
+    const countryBadge = p.countryLabel ? \`<span class="badge badge-country">🌍 \${p.countryLabel}</span>\` : '';
     return \`<div class="row-item \${rc}">
       <div class="led \${lc}"></div>
       <div class="item-body">
-        <div class="item-label">\${p.label} \${p.hasAuth?'<span class="badge badge-auth">🔐</span>':''}</div>
+        <div class="item-label">\${p.label} \${p.hasAuth?'<span class="badge badge-auth">🔐</span>':''} \${countryBadge}</div>
         <div class="item-meta">آخر فحص: \${chk} | فشل: \${p.failCount||0}</div>
       </div>
       <span class="badge \${tc}">\${p.type||'HTTP'}</span>
+      <select class="btn-sm" style="padding:5px 6px" onchange="setProxyCountry('\${p.id}',this.value)">\${countryOptsFor(p.country||'')}</select>
       <button class="btn-sm btn-ok" onclick="recheckOne('\${p.id}')">فحص</button>
       <button class="btn-sm" onclick="toggleProxy('\${p.id}',\${!p.enabled})">\${p.enabled?'تعطيل':'تفعيل'}</button>
       <button class="btn-sm btn-danger" onclick="deleteProxy('\${p.id}')">حذف</button>
@@ -1298,15 +1338,17 @@ async function loadProxies() {
 
 async function addProxy(){
   const raw=document.getElementById('proxyInput').value.trim(); if(!raw)return;
+  const country=document.getElementById('proxyCountrySel').value||'';
   document.getElementById('msg').textContent='⏳ جاري الإضافة والفحص...';
   try {
-    const d=await api('POST','/admin/proxies',{proxy:raw});
+    const d=await api('POST','/admin/proxies',{proxy:raw, country});
     if(d.ok){document.getElementById('msg').textContent=(d.checkResult&&d.checkResult.ok)?'✅ أضيف وشغال':'⚠️ أضيف لكن البروكسي لا يعمل';document.getElementById('proxyInput').value='';loadProxies();}
     else document.getElementById('msg').textContent='❌ '+(d.error||'خطأ');
   } catch(e){document.getElementById('msg').textContent='❌ خطأ: '+e.message;}
 }
 async function deleteProxy(id){if(!confirm('حذف؟'))return;try{await api('DELETE','/admin/proxies/'+id);}catch(e){}loadProxies();}
 async function toggleProxy(id,e){try{await api('PATCH','/admin/proxies/'+id,{enabled:e});}catch(e){}loadProxies();}
+async function setProxyCountry(id,country){try{await api('PATCH','/admin/proxies/'+id,{country});document.getElementById('msg').textContent='✅ اتحدثت الدولة';}catch(e){document.getElementById('msg').textContent='❌ خطأ: '+e.message;}loadProxies();}
 async function recheckOne(id){document.getElementById('msg').textContent='⏳...';try{await api('POST','/admin/proxies/check-all');document.getElementById('msg').textContent='✅ تم';}catch(e){document.getElementById('msg').textContent='❌ خطأ: '+e.message;}loadProxies();}
 async function checkAll(){document.getElementById('msg').textContent='⏳ جاري فحص الكل...';try{const d=await api('POST','/admin/proxies/check-all');const ok=(d.results||[]).filter(r=>r.ok).length;document.getElementById('msg').textContent=\`✅ \${ok}/\${(d.results||[]).length} شغالين\`;}catch(e){document.getElementById('msg').textContent='❌ خطأ: '+e.message;}loadProxies();}
 
@@ -1333,7 +1375,7 @@ async function loadKeys(){
         : '<span class="badge badge-key">بدون انتهاء</span>';
     const exhaust=k.isExhausted?'<span class="badge badge-dead">الحد أُنهي</span>':'';
     const usage=k.maxUsage?k.usageCount+'/'+k.maxUsage:k.usageCount+' استخدام';
-    const last=k.lastUsed?new Date(k.lastUsed).toLocaleString('ar'):'لم يُستخدم';
+    const last=k.lastUsed?(timeAgo(k.lastUsed)||new Date(k.lastUsed).toLocaleString('ar')):'لم يُستخدم بعد';
     return \`<div class="row-item \${rc}" id="ki-\${k.id}">
       <div class="led \${lc}"></div>
       <div class="item-body">
