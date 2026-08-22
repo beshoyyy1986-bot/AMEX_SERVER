@@ -1,0 +1,22 @@
+services:
+  web:
+    image: node:18
+    working_dir: /app
+    command: sh -c "npm install && npx nodemon server.js"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - DATA_DIR=/data
+      - ALLOWED_ORIGINS=*
+    env_file:
+      - ./.env.base44-defaults
+      - /run/base44/app.env
+    volumes:
+      - ./:/app
+      - data:/data
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  data:
