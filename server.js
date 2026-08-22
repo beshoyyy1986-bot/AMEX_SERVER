@@ -665,11 +665,21 @@ async function serverSideSession(cookies, pageUrl, proxyInfo = null) {
   for (const url of [...new Set(urlsToTry)]) {
     try {
       console.log(`[session] fetching: ${url.slice(0, 90)}`);
-      const resp = await chromeFetch(url, {
-        method: 'GET',
-        headers: { ...SESSION_HEADERS, 'Cookie': cookies, 'Referer': SESSION_ORIGIN },
-        redirect: 'follow',   // ★ let node-fetch follow 302s automatically
-      }, proxyInfo);
+      // ★ FIX: كان مفيش timeout على أي fetch هنا — لو URL علّق كان بيستنى
+      // على مهلة node-fetch الافتراضية، وده اللي كان بيطول الـ 41 ثانية
+      const ctrl = new AbortController();
+      const abortTimer = setTimeout(() => ctrl.abort(), 7000);
+      let resp;
+      try {
+        resp = await chromeFetch(url, {
+          method: 'GET',
+          headers: { ...SESSION_HEADERS, 'Cookie': cookies, 'Referer': SESSION_ORIGIN },
+          redirect: 'follow',   // ★ let node-fetch follow 302s automatically
+          signal: ctrl.signal,
+        }, proxyInfo);
+      } finally {
+        clearTimeout(abortTimer);
+      }
 
       // Skip if landed on login / checkpoint
       const finalUrl = resp.url || url;
@@ -887,7 +897,7 @@ function calcJazoest(s) {
 }
 
 async function addSharedCard(params, proxyInfo = null) {
-  const { user, ad, bm, token, sharedId, cookies, lsd } = params;
+  const { user, ad, bm, token, sharedId, cookies, lsd, payAccountId } = params;
   const now  = Date.now();
   const uuid1 = Math.random().toString(36).slice(2, 11);
   const uuid2 = Math.random().toString(36).slice(2, 11);
@@ -895,7 +905,10 @@ async function addSharedCard(params, proxyInfo = null) {
   const wizardSess = `upl_wizard_${now}_${uuid2}`;
   const vars = {
     input: {
-      payment_legacy_account_id: ad, shared_biz_credential_id: sharedId,
+      // ★ FIX: payment_legacy_account_id لازم ياخد payAccountId (billing_payment_account.id)
+      // مش adAccountId — ده اللي /fetch-cards بيجيبه ويحطه في session.payAccountId.
+      // fallback لـ ad لو payAccountId مش موجود (توافق مع sessions قديمة).
+      payment_legacy_account_id: payAccountId || ad, shared_biz_credential_id: sharedId,
       upl_logging_data: {
         context: 'billingaddpm', credential_id: sharedId,
         credential_type: 'CREDIT_CARD', entry_point: 'BILLING_HUB', external_flow_id: extId,
@@ -930,8 +943,10 @@ async function addSharedCard(params, proxyInfo = null) {
   );
   const text = await response.text();
   console.log(`[addSharedCard] status=${response.status} len=${text.length} body=${text.slice(0, 300)}`);
+  // ★ FIX: نفس الـ for(;;); stripping اللي في fbGraphql — كان ناقص هنا
+  const clean = text.replace(/^for\s*\(;;\s*\);?/, '');
   let json;
-  try { json = JSON.parse(text); } catch (e) { throw new Error(`استجابة غير صالحة: ${text.slice(0, 200)}`); }
+  try { json = JSON.parse(clean); } catch (e) { throw new Error(`استجابة غير صالحة: ${text.slice(0, 200)}`); }
   if (json.errors) {
     const e = json.errors[0];
     console.log(`[addSharedCard] ERROR code=${e.code} severity=${e.severity} debug=${e.debug_link || 'none'}`);
@@ -960,6 +975,9 @@ app.post('/add-cards', rateLimit({ max: 20, keyPrefix: 'add-cards' }), apiAuth, 
   const token    = session.fb_dtsg   || session.token   || '';
   const lsd      = session.lsd      || '';
   const cookies  = session.cookies  || '';
+  // ★ FIX: بيجي من /fetch-cards (billing_payment_account.id) — ده اللي المفروض
+  // يتبعت كـ payment_legacy_account_id مش adAccountId
+  const payAccountId = session.payAccountId || session.payAccount || ad;
 
   let proxyInfo = null, proxySource = 'none';
   if (userProxy?.trim()) {
@@ -982,7 +1000,7 @@ app.post('/add-cards', rateLimit({ max: 20, keyPrefix: 'add-cards' }), apiAuth, 
       if (sp) proxyInfo = parseProxy(sp.raw);
     }
     try {
-      await addSharedCard({ user, ad, bm, token, sharedId: card.sharedId, cookies, lsd }, proxyInfo);
+      await addSharedCard({ user, ad, bm, token, sharedId: card.sharedId, cookies, lsd, payAccountId }, proxyInfo);
       results.push({ sharedId: card.sharedId, label: card.label, success: true });
     } catch (err) {
       results.push({ sharedId: card.sharedId, label: card.label, success: false, error: err.message });
