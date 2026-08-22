@@ -85,8 +85,11 @@ function saveServerProxies(list) {
 let serverProxies = loadServerProxies();
 let rotationIndex = 0;
 
-function getNextServerProxy() {
-  const active = serverProxies.filter(p => p.enabled && p.lastStatus !== 'dead');
+// ★ FIX: بترجع { proxyInfo, error } — لو country محدد ومفيش بروكسي شغال ليها،
+// بترجع error بدل ما تسيب الطلب يعدي من غير بروكسي بالغلط
+function getNextServerProxy(country = '') {
+  let active = serverProxies.filter(p => p.enabled && p.lastStatus !== 'dead');
+  if (country) active = active.filter(p => p.country === country);
   if (!active.length) return null;
   const p = active[rotationIndex % active.length];
   rotationIndex++;
@@ -345,17 +348,30 @@ app.post('/check-proxy', rateLimit({ max: 30, keyPrefix: 'check-proxy' }), apiAu
 // ============================================================
 // ADMIN: PROXY ENDPOINTS
 // ============================================================
+// ============================================================
+// COUNTRIES — shared list for proxy tagging + client country selector
+// ============================================================
+const BSH_COUNTRIES = [
+  ['US', 'الولايات المتحدة الأمريكية'], ['UM', 'جزر الولايات الصغيرة النائية'],
+  ['VI', 'جزر فيرجن آيلاند الأمريكية'], ['AS', 'ساموا الأمريكية'],
+  ['GB', 'المملكة المتحدة'], ['DE', 'ألمانيا'], ['FR', 'فرنسا'], ['RU', 'روسيا'],
+  ['SE', 'السويد'], ['CY', 'قبرص'], ['NG', 'نيجيريا'], ['BE', 'بلجيكا'],
+  ['PK', 'باكستان'], ['QA', 'قطر'], ['SA', 'السعودية'], ['AE', 'الإمارات'], ['JO', 'الأردن'],
+];
+const COUNTRY_LABEL = Object.fromEntries(BSH_COUNTRIES);
+
 app.get('/admin/proxies', rateLimit({ max: 60, keyPrefix: 'admin-api' }), adminAuth, (req, res) => {
   const safeList = serverProxies.map(p => ({
     id: p.id, label: p.label, enabled: p.enabled, addedAt: p.addedAt,
     lastCheck: p.lastCheck, lastStatus: p.lastStatus, failCount: p.failCount,
     type: p.type, hasAuth: p.hasAuth, host: p.host, port: p.port,
+    country: p.country || '', countryLabel: p.country ? (COUNTRY_LABEL[p.country] || p.country) : '',
   }));
-  res.json({ proxies: safeList, total: safeList.length, active: safeList.filter(p => p.enabled && p.lastStatus !== 'dead').length });
+  res.json({ proxies: safeList, total: safeList.length, active: safeList.filter(p => p.enabled && p.lastStatus !== 'dead').length, countries: BSH_COUNTRIES });
 });
 
 app.post('/admin/proxies', rateLimit({ max: 20, keyPrefix: 'admin-api' }), adminAuth, async (req, res) => {
-  const { proxy } = req.body;
+  const { proxy, country } = req.body;
   if (!proxy?.trim()) return res.status(400).json({ error: 'proxy مطلوب' });
   const parsed = parseProxy(proxy.trim());
   if (!parsed) return res.status(400).json({ error: 'صيغة غير صحيحة' });
@@ -365,6 +381,7 @@ app.post('/admin/proxies', rateLimit({ max: 20, keyPrefix: 'admin-api' }), admin
     raw: proxy.trim(), label: proxyDisplayLabel(parsed),
     host: parsed.host, port: parsed.port, type: getProxyTypeLabel(parsed),
     hasAuth: !!(parsed.username), enabled: true,
+    country: (country && COUNTRY_LABEL[country]) ? country : '',
     addedAt: new Date().toISOString(), lastCheck: new Date().toISOString(),
     lastStatus: check.ok ? 'ok' : 'dead', failCount: check.ok ? 0 : 1,
   };
@@ -384,6 +401,7 @@ app.patch('/admin/proxies/:id', rateLimit({ max: 20, keyPrefix: 'admin-api' }), 
   const p = serverProxies.find(p => p.id === req.params.id);
   if (!p) return res.status(404).json({ error: 'not found' });
   if (req.body.enabled !== undefined) p.enabled = !!req.body.enabled;
+  if (req.body.country !== undefined) p.country = (req.body.country && COUNTRY_LABEL[req.body.country]) ? req.body.country : '';
   saveServerProxies(serverProxies);
   res.json({ ok: true, proxy: { ...p, raw: undefined } });
 });
@@ -765,22 +783,37 @@ async function fbGraphql(origin, params, cookies, lsd, proxyInfo = null) {
 // ============================================================
 // FETCH CARDS ENDPOINT (NEW — fixes root causes 1-5)
 // ============================================================
+// ★ الأولوية: 1) بروكسي شخصي من المستخدم (بغض النظر عن الدولة)
+//            2) لو مفيش بروكسي شخصي وفي دولة محددة → لازم بروكسي من نفس الدولة
+//               (لو مفيش، رجّع error — الطلب متعديش من غير بروكسي بالغلط)
+//            3) لو مفيش بروكسي ومفيش دولة → روتيشن عادي على كل البروكسيات
+function resolveProxy(userProxy, country = '') {
+  if (userProxy?.trim()) {
+    const proxyInfo = parseProxy(userProxy.trim());
+    return { proxyInfo, proxySource: proxyInfo ? 'user' : 'none', error: null };
+  }
+  if (country) {
+    const sp = getNextServerProxy(country);
+    if (!sp) {
+      const label = COUNTRY_LABEL[country] || country;
+      return { proxyInfo: null, proxySource: 'none', error: `لا يوجد بروكسي متاح لدولة "${label}" — أضف بروكسي لهذه الدولة من لوحة الإدارة أو اختر بروكسي شخصي` };
+    }
+    return { proxyInfo: parseProxy(sp.raw), proxySource: `server:${sp.id}`, error: null };
+  }
+  const sp = getNextServerProxy();
+  if (sp) return { proxyInfo: parseProxy(sp.raw), proxySource: `server:${sp.id}`, error: null };
+  return { proxyInfo: null, proxySource: 'none', error: null };
+}
+
 app.post('/fetch-cards', rateLimit({ max: 20, keyPrefix: 'fetch-cards' }), apiAuth, async (req, res) => {
-  const { cookies, businessId, adAccountId, proxy: userProxy, pageUrl } = req.body;
+  const { cookies, businessId, adAccountId, proxy: userProxy, country, pageUrl } = req.body;
 
   if (!cookies)    return res.status(400).json({ ok: false, error: 'الكوكيز مطلوبة' });
   if (!businessId) return res.status(400).json({ ok: false, error: 'business_id مطلوب' });
 
-  // Resolve proxy
-  let proxyInfo = null;
-  let proxySource = 'none';
-  if (userProxy?.trim()) {
-    proxyInfo = parseProxy(userProxy.trim());
-    proxySource = proxyInfo ? 'user' : 'none';
-  } else {
-    const sp = getNextServerProxy();
-    if (sp) { proxyInfo = parseProxy(sp.raw); proxySource = `server:${sp.id}`; }
-  }
+  // Resolve proxy (manual > country-tagged > normal rotation)
+  const { proxyInfo, proxySource, error: proxyErr } = resolveProxy(userProxy, country);
+  if (proxyErr) return res.status(400).json({ ok: false, error: proxyErr });
 
   const proxyLabel = proxyInfo
     ? proxyDisplayLabel(proxyInfo)
@@ -996,7 +1029,7 @@ app.post('/add-cards', rateLimit({ max: 20, keyPrefix: 'add-cards' }), apiAuth, 
   // The session object now comes from /fetch-cards with server-resolved values:
   // { userId, businessId, adAccountId, payAccountId, fb_dtsg, lsd, cookies }
   // OR the old format { user, ad, bm, token, cookies, lsd, ... } for backward compat
-  const { session, cards, delaySec = 1, proxy: userProxy } = req.body;
+  const { session, cards, delaySec = 1, proxy: userProxy, country } = req.body;
   if (!session?.cookies) return res.status(400).json({ error: 'cookies مفقودة' });
   if (!cards?.length)    return res.json({ results: [], successCount: 0, total: 0, proxyUsed: null, proxySource: 'none' });
 
@@ -1011,14 +1044,8 @@ app.post('/add-cards', rateLimit({ max: 20, keyPrefix: 'add-cards' }), apiAuth, 
   // يتبعت كـ payment_legacy_account_id مش adAccountId
   const payAccountId = session.payAccountId || session.payAccount || ad;
 
-  let proxyInfo = null, proxySource = 'none';
-  if (userProxy?.trim()) {
-    proxyInfo   = parseProxy(userProxy.trim());
-    proxySource = proxyInfo ? 'user' : 'none';
-  } else {
-    const sp = getNextServerProxy();
-    if (sp) { proxyInfo = parseProxy(sp.raw); proxySource = `server:${sp.id}`; }
-  }
+  let { proxyInfo, proxySource, error: proxyErr } = resolveProxy(userProxy, country);
+  if (proxyErr) return res.status(400).json({ results: [], successCount: 0, total: cards.length, error: proxyErr });
 
   const proxyLabel = proxyInfo
     ? proxyDisplayLabel(proxyInfo)
@@ -1028,7 +1055,7 @@ app.post('/add-cards', rateLimit({ max: 20, keyPrefix: 'add-cards' }), apiAuth, 
   for (let i = 0; i < cards.length; i++) {
     const card = cards[i];
     if (proxySource.startsWith('server') && !userProxy) {
-      const sp = getNextServerProxy();
+      const sp = getNextServerProxy(country);
       if (sp) proxyInfo = parseProxy(sp.raw);
     }
     try {
@@ -1093,57 +1120,60 @@ button{padding:12px;border:none;border-radius:10px;background:#7c6fff;color:#fff
 <title>Admin Dashboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#07090d;color:#e0e0e0;font-family:'Segoe UI',sans-serif;padding:20px;min-height:100vh}
-h1{color:#7c6fff;font-size:20px;margin-bottom:20px;letter-spacing:2px;display:flex;align-items:center;gap:8px}
-.tabs{display:flex;gap:4px;margin-bottom:20px;background:#0d0d12;border-radius:10px;padding:4px}
-.tab{flex:1;padding:9px;text-align:center;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;color:#555;transition:all .2s;border:none;background:transparent}
-.tab.active{background:#1a1a2e;color:#7c6fff;box-shadow:0 0 10px rgba(124,111,255,.15)}
+/* ★ FIX: تدرج ألوان أوضح بين الطبقات (body < card < row-item < input) —
+   كانت كلها قريبة من بعض (#07090d / #0d0d12 / #070710) فمفيش فصل بصري */
+body{background:#05060a;color:#e6e6ee;font-family:'Segoe UI',sans-serif;padding:20px;min-height:100vh}
+h1{color:#8f84ff;font-size:20px;margin-bottom:20px;letter-spacing:2px;display:flex;align-items:center;gap:8px}
+.tabs{display:flex;gap:4px;margin-bottom:20px;background:#12121b;border-radius:10px;padding:4px;border:1px solid rgba(255,255,255,.05)}
+.tab{flex:1;padding:9px;text-align:center;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;color:#666;transition:all .2s;border:none;background:transparent}
+.tab.active{background:#242438;color:#9b8fff;box-shadow:0 0 10px rgba(139,124,255,.2)}
 .panel{display:none}.panel.active{display:block}
-.card{background:#0d0d12;border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:18px;margin-bottom:16px}
-.card h2{font-size:11px;color:#555;letter-spacing:1px;margin-bottom:12px;text-transform:uppercase}
-input,select{background:#070710;border:1px solid rgba(255,255,255,.08);border-radius:8px;color:#fff;padding:8px 12px;font-size:12px;outline:none}
-input:focus,select:focus{border-color:rgba(124,111,255,.5)}
+.card{background:#12121b;border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:18px;margin-bottom:16px;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+.card h2{font-size:11px;color:#7a7a8c;letter-spacing:1px;margin-bottom:12px;text-transform:uppercase}
+input,select{background:#1c1c2b;border:1px solid rgba(255,255,255,.14);border-radius:8px;color:#fff;padding:8px 12px;font-size:12px;outline:none}
+input:focus,select:focus{border-color:rgba(155,143,255,.7);background:#22223400}
 .row{display:flex;gap:8px;margin-bottom:8px}
 .row input{flex:1}.row select{width:auto}
 button{border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;transition:all .2s}
-.btn-main{background:#7c6fff;color:#fff;width:100%;height:38px}
-.btn-main:hover{background:#6a5de8}
-.btn-sm{background:rgba(255,255,255,.06);color:#aaa;font-size:11px;padding:5px 10px}
-.btn-danger{background:rgba(255,60,60,.1);color:#ff6060;border:1px solid rgba(255,60,60,.2)}
-.btn-ok{background:rgba(124,111,255,.1);color:#7c6fff;border:1px solid rgba(124,111,255,.2)}
-.btn-copy{background:rgba(0,200,120,.1);color:#00c878;border:1px solid rgba(0,200,120,.2)}
+.btn-main{background:#8f7fff;color:#fff;width:100%;height:38px}
+.btn-main:hover{background:#7a6bf0}
+.btn-sm{background:rgba(255,255,255,.09);color:#c4c4d4;font-size:11px;padding:5px 10px}
+.btn-danger{background:rgba(255,70,70,.14);color:#ff7a7a;border:1px solid rgba(255,70,70,.28)}
+.btn-ok{background:rgba(139,124,255,.14);color:#a99bff;border:1px solid rgba(139,124,255,.28)}
+.btn-copy{background:rgba(0,210,130,.14);color:#3ee0a0;border:1px solid rgba(0,210,130,.28)}
 .stats{display:flex;gap:10px;margin-bottom:16px}
-.stat{background:#0d0d12;border:1px solid rgba(255,255,255,.05);border-radius:8px;padding:10px 14px;flex:1;text-align:center}
-.stat-num{font-size:22px;font-weight:700;color:#7c6fff}
-.stat-label{font-size:10px;color:#444;margin-top:2px}
+.stat{background:#12121b;border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px 14px;flex:1;text-align:center}
+.stat-num{font-size:22px;font-weight:700;color:#9b8fff}
+.stat-label{font-size:10px;color:#666;margin-top:2px}
 .list{display:flex;flex-direction:column;gap:6px}
-.row-item{background:#070710;border:1px solid rgba(255,255,255,.05);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px}
-.row-item.dead,.row-item.expired,.row-item.exhausted{opacity:.5;border-color:rgba(255,60,60,.15)}
-.row-item.ok{border-color:rgba(124,111,255,.2)}
+.row-item{background:#191926;border:1px solid rgba(255,255,255,.09);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px}
+.row-item.dead,.row-item.expired,.row-item.exhausted{opacity:.55;border-color:rgba(255,70,70,.22)}
+.row-item.ok{border-color:rgba(139,124,255,.3)}
 .led{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.led.green{background:#00c878;box-shadow:0 0 5px #00c878}
-.led.purple{background:#7c6fff;box-shadow:0 0 5px #7c6fff}
-.led.red{background:#ff5050;box-shadow:0 0 5px #ff5050}
-.led.gray{background:#333}
+.led.green{background:#3ee0a0;box-shadow:0 0 5px #3ee0a0}
+.led.purple{background:#9b8fff;box-shadow:0 0 5px #9b8fff}
+.led.red{background:#ff6b6b;box-shadow:0 0 5px #ff6b6b}
+.led.gray{background:#45455a}
 .item-body{flex:1;min-width:0}
-.item-label{font-size:12px;color:#ccc;white-space:nowrap;overflow:hidden;overflow:text-overflow:ellipsis}
-.item-meta{font-size:10px;color:#444;margin-top:2px}
+.item-label{font-size:12px;color:#e0e0ea;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item-meta{font-size:10px;color:#8a8a9c;margin-top:2px}
 .badge{font-size:9px;padding:2px 7px;border-radius:20px;font-weight:700;white-space:nowrap}
-.badge-http{background:rgba(59,155,255,.12);color:#3b9eff}
-.badge-socks{background:rgba(245,166,35,.12);color:#f5a623}
-.badge-auth{background:rgba(0,200,120,.1);color:#00c878}
-.badge-key{background:rgba(124,111,255,.12);color:#7c6fff}
-.badge-exp{background:rgba(255,100,0,.1);color:#ff6400}
-.badge-dead{background:rgba(255,60,60,.1);color:#ff5050}
-.key-reveal{font-size:10px;font-family:monospace;background:#0a0a14;border:1px solid rgba(124,111,255,.2);border-radius:6px;padding:6px 10px;color:#7c6fff;word-break:break-all;margin-top:6px;display:none}
-#msg{font-size:12px;color:#7c6fff;min-height:18px;margin-top:6px}
-#msgK{font-size:12px;color:#00c878;min-height:18px;margin-top:6px}
-.check-all-btn{background:rgba(124,111,255,.08);color:#7c6fff;border:1px solid rgba(124,111,255,.2);width:100%;height:36px;border-radius:8px;margin-bottom:10px}
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center}
+.badge-http{background:rgba(80,170,255,.18);color:#7cc4ff}
+.badge-socks{background:rgba(245,166,35,.18);color:#ffbc5c}
+.badge-auth{background:rgba(0,210,130,.16);color:#3ee0a0}
+.badge-key{background:rgba(139,124,255,.18);color:#b0a4ff}
+.badge-exp{background:rgba(255,130,30,.18);color:#ff9c50}
+.badge-dead{background:rgba(255,70,70,.16);color:#ff7a7a}
+.badge-country{background:rgba(80,220,255,.16);color:#7ce3ff}
+.key-reveal{font-size:10px;font-family:monospace;background:#1c1c2b;border:1px solid rgba(139,124,255,.3);border-radius:6px;padding:6px 10px;color:#b0a4ff;word-break:break-all;margin-top:6px;display:none}
+#msg{font-size:12px;color:#9b8fff;min-height:18px;margin-top:6px}
+#msgK{font-size:12px;color:#3ee0a0;min-height:18px;margin-top:6px}
+.check-all-btn{background:rgba(139,124,255,.14);color:#a99bff;border:1px solid rgba(139,124,255,.28);width:100%;height:36px;border-radius:8px;margin-bottom:10px}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:100;align-items:center;justify-content:center}
 .modal-overlay.show{display:flex}
-.modal{background:#0d0d12;border:1px solid rgba(124,111,255,.3);border-radius:14px;padding:20px;width:320px;max-width:90vw}
-.modal h3{color:#7c6fff;font-size:14px;margin-bottom:12px}
-.modal .key-box{font-family:monospace;font-size:11px;background:#070710;border:1px solid rgba(124,111,255,.3);border-radius:8px;padding:10px;color:#00c878;word-break:break-all;margin-bottom:12px}
+.modal{background:#15151f;border:1px solid rgba(139,124,255,.35);border-radius:14px;padding:20px;width:320px;max-width:90vw}
+.modal h3{color:#9b8fff;font-size:14px;margin-bottom:12px}
+.modal .key-box{font-family:monospace;font-size:11px;background:#1c1c2b;border:1px solid rgba(139,124,255,.35);border-radius:8px;padding:10px;color:#3ee0a0;word-break:break-all;margin-bottom:12px}
 .modal-btns{display:flex;gap:8px}
 </style>
 </head>
