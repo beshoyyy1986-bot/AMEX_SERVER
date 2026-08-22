@@ -529,7 +529,8 @@ function parseBillingUrl(url) {
   try {
     const u = new URL(url);
     businessId = u.searchParams.get('business_id') || '';
-    for (const p of ['act', 'act_id', 'ad_account_id', 'account_id', 'aaid']) {
+    // ★ FIX: أضفنا asset_id و payment_account_id (صفحات billing_hub/accounts/details)
+    for (const p of ['act', 'act_id', 'ad_account_id', 'account_id', 'aaid', 'asset_id', 'payment_account_id']) {
       const v = u.searchParams.get(p);
       if (v) { adAccountId = v.replace(/^act_/i, ''); break; }
     }
@@ -541,6 +542,8 @@ function parseBillingUrl(url) {
   if (!businessId) { const m = url.match(/[?&]business_id=(\d+)/); if (m) businessId = m[1]; }
   if (!adAccountId) { const m = url.match(/act_(\d+)/); if (m) adAccountId = m[1]; }
   if (!adAccountId) { const m = url.match(/[?&]account_id=(\d+)/); if (m) adAccountId = m[1]; }
+  if (!adAccountId) { const m = url.match(/[?&]asset_id=(\d+)/); if (m) adAccountId = m[1]; }
+  if (!adAccountId) { const m = url.match(/[?&]payment_account_id=(\d+)/); if (m) adAccountId = m[1]; }
   return { businessId, adAccountId };
 }
 
@@ -796,8 +799,17 @@ app.post('/fetch-cards', rateLimit({ max: 20, keyPrefix: 'fetch-cards' }), apiAu
       return res.json({ ok: false, error: 'تعذّر استخراج fb_dtsg — الكوكيز منتهية أو الحساب موقوف' });
     }
 
-    // If adAccountId not provided, try to extract from billing URL or use businessId
-    const adId = adAccountId || businessId;
+    // ★ FIX: كان فيه fallback خطير `adAccountId || businessId` — لو adAccountId
+    // مش موجود كان بيبعت الـ business_id لفيسبوك على إنه ad/asset account ID،
+    // وده اللي كان بيسبب field_exception (فيسبوك بيحاول يحل رقم من نوع غلط).
+    // دلوقتي لو مفيش adAccountId نرجّع خطأ واضح بدل ما نبعت رقم غلط.
+    let adId = adAccountId;
+    if (!adId && pageUrl) {
+      adId = parseBillingUrl(pageUrl).adAccountId;
+    }
+    if (!adId) {
+      return res.json({ ok: false, error: 'تعذّر استخراج معرّف الحساب/الأصل (asset_id / account_id) من رابط الصفحة — افتح صفحة الفوترة الصحيحة وحاول تاني' });
+    }
 
     // Step 1: Get billing payment account ID (doc_id 23945721255021756)
     console.log(`[fetch-cards] Step 1: get billing account ID — user=${userId} bm=${businessId} ad=${adId}`);
