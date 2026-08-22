@@ -904,10 +904,10 @@ async function addSharedCard(params, proxyInfo = null) {
   const wizardSess = `upl_wizard_${now}_${uuid2}`;
   const vars = {
     input: {
-      // ★ FIX: payment_legacy_account_id لازم ياخد payAccountId (billing_payment_account.id)
-      // مش adAccountId — ده اللي /fetch-cards بيجيبه ويحطه في session.payAccountId.
-      // fallback لـ ad لو payAccountId مش موجود (توافق مع sessions قديمة).
-      payment_legacy_account_id: payAccountId || ad, shared_biz_credential_id: sharedId,
+      // ★ REVERTED: كنت غيّرتها لـ payAccountId بناءً على نظرية مش متأكدة —
+      // الكود الشغال (ccFromBm.js) بيستخدم adAccountId هنا، ولوج field_exception
+      // الحقيقي أكد إن ده كان هو الغلط (بعتنا نوع ID غلط لفيسبوك)
+      payment_legacy_account_id: ad, shared_biz_credential_id: sharedId,
       upl_logging_data: {
         context: 'billingaddpm', credential_id: sharedId,
         credential_type: 'CREDIT_CARD', entry_point: 'BILLING_HUB', external_flow_id: extId,
